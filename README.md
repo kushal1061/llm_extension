@@ -90,7 +90,7 @@ When the user presses **Enter** in ChatGPT:
 ## Project Structure
 
 ```text
-/home/runner/work/llm_extension/llm_extension
+project-root/
 ├── manifest.json   # Extension manifest and content script registration
 ├── content.js      # Prompt interception, routing, local streaming, cloud handoff
 ├── popup.html      # Popup UI
@@ -124,7 +124,7 @@ ollama pull ministral-3:8b
 3. Enable **Developer mode**.
 4. Click **Load unpacked**.
 5. Select:
-   - `/home/runner/work/llm_extension/llm_extension`
+   - the project folder (the one containing `manifest.json`)
 6. Ensure Ollama is running at `http://localhost:11434`.
 7. Open `https://chatgpt.com/` and start prompting.
 
