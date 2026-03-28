@@ -180,16 +180,17 @@ async function* streamOllamaResponse(response) {
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop();
+        let result="";
 
         for (const line of lines) {
             const trimmed = line.trim();
             if (!trimmed) continue;
             try {
                 const json = JSON.parse(trimmed);
-                if (json.response) yield json.response;
-                
+                result += json.response;
+                if (json.response) yield json.response; 
                 if (json.done) {
-                    addMessage("ollama", json.response || "");
+                    addMessage("ollama", result);
                     return;
                 }
                 if (json.error) throw new Error(`Ollama: ${json.error}`);
