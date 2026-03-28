@@ -2,11 +2,14 @@
   "manifest_version": 3,
   "name": "Injection Test",
   "version": "1.0",
-  "permissions": ["scripting"],
+  "permissions": ["scripting", "storage"],
+  "action": {
+    "default_popup": "popup.html"
+  },
   "content_scripts": [
     {
-      "matches": ["https://chatgpt.com/c/*"],
-      "js": ["content.js"]
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["content.js", "popup.js"]
     }
   ]
 }
