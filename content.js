@@ -111,7 +111,7 @@ User query: "${query.replace(/"/g, '\\"')}"
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                model: "ministral-3:8b",
+                model: "qwen3:8b",
                 prompt: classifierPrompt,
                 stream: false,
             }),
@@ -187,7 +187,11 @@ async function* streamOllamaResponse(response) {
             try {
                 const json = JSON.parse(trimmed);
                 if (json.response) yield json.response;
-                if (json.done) return;
+                
+                if (json.done) {
+                    addMessage("ollama", json.response || "");
+                    return;
+                }
                 if (json.error) throw new Error(`Ollama: ${json.error}`);
             } catch (e) {
                 console.warn("⚠️ Skipping unparseable line:", trimmed);
@@ -297,7 +301,7 @@ async function getLocalStreamingResponse(query) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-            model: "ministral-3:8b",
+            model: "qwen3:8b",
             prompt: query,
             stream: true,
         }),
@@ -327,6 +331,92 @@ document.addEventListener("input", () => {
     if (inputBox) lastText = inputBox.innerText.trim();
 });
 
+function addMessage(role, content) {
+  let history = JSON.parse(localStorage.getItem("chat_history")) || [];
+
+  history.push({
+    role, // "user" or "assistant"
+    content,
+    time: Date.now()
+  });
+
+  // keep last 20 messages max
+  if (history.length > 20) {
+    history = history.slice(-20);
+  }
+
+  localStorage.setItem("chat_history", JSON.stringify(history));
+}
+
+function getRecentContext() {
+  let history = JSON.parse(localStorage.getItem("chat_history")) || [];
+
+  let users = [];
+  let assistants = [];
+
+  // traverse from latest → oldest
+  for (let i = history.length - 1; i >= 0; i--) {
+    let msg = history[i];
+
+    if (msg.role === "user" && users.length < 3) {
+      users.push(msg.content);
+    }
+
+    if (msg.role === "ollama" && assistants.length < 3) {
+      assistants.push(msg.content);
+    }
+
+    if (users.length === 3 && assistants.length === 3) break;
+  }
+
+  return {
+    users: users.reverse(),
+    assistants: assistants.reverse()
+  };
+}
+
+function buildContextPrompt(users, assistants) {
+  return `
+You are summarizing a conversation.
+
+Goal:
+Extract the user's intent and ongoing context.
+
+Rules:
+- Keep it under 2 sentences
+- Focus on what the user wants
+- Ignore small talk
+
+User messages:
+${users.map((u, i) => `${i + 1}. ${u}`).join("\n")}
+
+Assistant responses:
+${assistants.map((a, i) => `${i + 1}. ${a}`).join("\n")}
+
+Summary:
+`;
+}
+
+async function generateSummary() {
+  const { users, assistants } = getRecentContext();
+  const prompt = buildContextPrompt(users, assistants);
+
+  const res = await fetch("http://localhost:11434/api/generate", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: "qwen3:8b",
+      prompt: prompt,
+      stream: false
+    })
+  });
+
+  const data = await res.json();
+  console.log("Summary:", data.response);
+  return data.response;
+}
 // ─────────────────────────────────────────────
 //  MAIN KEYDOWN LISTENER
 // ─────────────────────────────────────────────
@@ -351,6 +441,7 @@ document.addEventListener("keydown", async (e) => {
         console.log("📍 Final route:", routeInfo);
 
         if (routeInfo.decision === "local") {
+            addMessage("user", userQuery);
             const streamResponse = await getLocalStreamingResponse(userQuery);
             await injectStreamingResponse(streamOllamaResponse(streamResponse), routeInfo);
         } else {
