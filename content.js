@@ -2,79 +2,181 @@ console.log("Extension loaded");
 
 let lastText = "";
 let isProcessing = false;
+function buildClassifierPrompt(userPrompt, conversationHistory = []) {
 
-const ROUTING_RULES = {
-    local: [
-        { category: "math", pattern: /\b(calculate|solve|integral|derivative|equation|algebra|geometry|trigonometry|matrix|factorial|prime|modulo|\d+\s*[\+\-\*\/\^]\s*\d+)\b/i },
-        { category: "coding", pattern: /\b(code|function|class|algorithm|bug|debug|refactor|syntax|variable|loop|recursion|api|json|html|css|javascript|python|java|typescript|sql|bash|shell|regex)\b/i },
-        { category: "general", pattern: /\b(what is|define|explain|describe|difference between|how does|meaning of|tell me about)\b/i },
-        { category: "creative", pattern: /\b(write a|poem|story|essay|letter|joke|haiku|summarize|paraphrase|rewrite|translate)\b/i },
-        { category: "reasoning", pattern: /\b(if .* then|pros and cons|compare|analyze|evaluate|rank|list|enumerate|step.by.step)\b/i },
-    ],
-    chatgpt: [
-        { category: "realtime", pattern: /\b(today|right now|current|latest|news|stock price|weather|live|trending|who won|score)\b/i },
-        { category: "web", pattern: /\b(search the web|browse|open url|visit|website|link|http|image of|generate image|dall.?e|midjourney)\b/i },
-        { category: "longctx", pattern: /\b(entire codebase|full file|all pages|complete document|upload|pdf|attachment)\b/i },
-    ],
-};
+  const historyText = conversationHistory.length > 0
+    ? conversationHistory
+        .slice(-6)
+        .map(m => `${m.role.toUpperCase()}: ${m.content.slice(0, 200)}`)
+        .join('\n')
+    : 'None';
 
-const LOCAL_CATEGORIES = new Set([
-    "math", "coding", "general_knowledge", "creative_writing",
-    "reasoning", "language", "summarization", "translation",
-]);
+  return `You are a prompt router. Your job is to classify whether a user prompt should be handled by a LOCAL LLM or sent to a CLOUD LLM (ChatGPT).
 
-const CONFIDENCE_THRESHOLD = 0.65;
+Analyze the prompt carefully across all factors below. Be conservative — only route locally if you are confident the local model can handle it well.
 
-function keywordRoute(query) {
-    const q = query.toLowerCase();
+---
 
-    for (const rule of ROUTING_RULES.chatgpt) {
-        if (rule.pattern.test(q)) {
-            console.log(`Keyword -> CHATGPT [${rule.category}]`);
-            return { decision: "chatgpt", category: rule.category, layer: 1 };
-        }
+## CONVERSATION HISTORY (up to last 3 turns / 6 messages)
+${historyText}
+
+---
+
+## USER PROMPT TO CLASSIFY
+"""
+${userPrompt}
+"""
+
+---
+
+## CLASSIFICATION FACTORS
+
+Evaluate each factor and assign a score. Be honest and precise.
+
+### FACTOR 1 — Task complexity [0–3]
+0 = Trivial. Single-step lookup, definition, translation, simple math.
+1 = Moderate. Short explanation, basic creative writing, summarization of provided text.
+2 = High. Multi-step reasoning, code generation, structured analysis, comparisons.
+3 = Very high. Architecture design, long-form writing, debugging complex code, deep research synthesis.
+Score: ?
+
+### FACTOR 2 — Context dependency [0–3]
+0 = Fully self-contained. No reference to prior messages, uploaded files, or external documents.
+1 = Light context. References something vague ("that idea", "the plan") but interpretable standalone.
+2 = Heavy context. Explicitly references prior conversation, "the code above", "my document", "earlier".
+3 = Cannot be answered without history. The prompt is meaningless without prior context.
+Score: ?
+
+### FACTOR 3 — Knowledge recency requirement [0–3]
+0 = Timeless knowledge. Math, science fundamentals, history, definitions, coding concepts.
+1 = Slow-changing. Best practices, established frameworks, general world knowledge.
+2 = Recent knowledge required. Events, releases, or changes from the last 1–2 years.
+3 = Real-time required. Today's news, live prices, current weather, breaking events.
+Score: ?
+
+### FACTOR 4 — Output precision requirement [0–3]
+0 = Casual. A poem, a joke, a conversational reply. Minor errors are fine.
+1 = General. An explanation or summary. Small inaccuracies tolerable.
+2 = Professional. Code that should run, factual writing, structured documents.
+3 = Critical. Medical, legal, financial, security-sensitive content. Errors have real consequences.
+Score: ?
+
+### FACTOR 5 — Prompt length and information density [0–2]
+0 = Short and simple (under 30 words, single question or task).
+1 = Medium (30–100 words, some constraints or context provided).
+2 = Long or dense (100+ words, multiple requirements, detailed instructions).
+Score: ?
+
+### FACTOR 6 — Capability gap risk [0–3]
+Does this task specifically require frontier model capabilities?
+0 = No. A 7B–13B local model handles this comfortably.
+1 = Unlikely to matter. Local model should manage but may be slightly weaker.
+2 = Likely matters. Task benefits significantly from a larger, more capable model.
+3 = Definite gap. Requires strong reasoning, nuanced judgment, or broad world knowledge that small models lack.
+Score: ?
+
+### FACTOR 7 — Privacy sensitivity [0 or -2]
+Does the prompt contain sensitive personal, financial, health, or business-confidential information that the user likely does NOT want sent to a cloud API?
+0 = Not sensitive. Safe to send to cloud.
+-2 = Sensitive. Strong reason to keep this local regardless of other factors.
+Score: ?
+
+---
+
+## SCORING RULES
+
+Add up Factors 1–6, then add Factor 7 (which may subtract).
+
+Total score range: -2 to 17
+
+Routing thresholds:
+- Score 0–4   → LOCAL
+- Score 5–8   → LOCAL (but flag low confidence)
+- Score 9–12  → CLOUD
+- Score 13–17 → CLOUD (high confidence)
+
+OVERRIDE RULES (apply before threshold):
+- If Factor 3 score is 3 → ALWAYS route CLOUD (real-time data impossible locally)
+- If Factor 7 score is -2 → ALWAYS route LOCAL (privacy override)
+- If Factor 2 score is 3 AND no history was provided → route CLOUD with warning
+
+---
+
+## YOUR RESPONSE
+
+Respond ONLY with valid JSON. No explanation outside the JSON block.
+
+{
+  "scores": {
+    "complexity": <0–3>,
+    "context_dependency": <0–3>,
+    "recency": <0–3>,
+    "precision": <0–3>,
+    "density": <0–2>,
+    "capability_gap": <0–3>,
+    "privacy": <0 or -2>
+  },
+  "total": <number>,
+  "route": "local" | "cloud",
+  "confidence": "high" | "medium" | "low",
+  "override": null | "real_time_data" | "privacy" | "missing_context",
+  "reason": "<one sentence explaining the key reason for this routing decision>"
+}`;
+}
+function stripMarkdownCodeFence(text) {
+    const trimmed = (text || "").trim();
+    if (!trimmed.startsWith("```")) {
+        return trimmed;
     }
 
-    for (const rule of ROUTING_RULES.local) {
-        if (rule.pattern.test(q)) {
-            console.log(`Keyword -> LOCAL [${rule.category}]`);
-            return { decision: "local", category: rule.category, layer: 1 };
-        }
+    const firstNewline = trimmed.indexOf("\n");
+    if (firstNewline === -1) {
+        return trimmed;
     }
 
-    console.log("Keyword -> UNKNOWN");
-    return { decision: "unknown", category: null, layer: 1 };
+    const withoutOpeningFence = trimmed.slice(firstNewline + 1);
+    const closingFenceIndex = withoutOpeningFence.lastIndexOf("```");
+    if (closingFenceIndex === -1) {
+        return withoutOpeningFence.trim();
+    }
+
+    return withoutOpeningFence.slice(0, closingFenceIndex).trim();
+}
+
+function normalizeClassifierResult(parsed) {
+    const route = String(parsed?.route || "").toLowerCase();
+    const confidence = String(parsed?.confidence || "").toLowerCase();
+    const override = parsed?.override ?? null;
+    const total = Number.isFinite(parsed?.total) ? parsed.total : null;
+    const decision = route === "local" ? "local" : "chatgpt";
+
+    return {
+        decision,
+        route,
+        confidence,
+        override,
+        total,
+        reason: parsed?.reason || "",
+        scores: parsed?.scores || null,
+        layer: 2,
+    };
+}
+
+function isRealtimeOrNewsQuery(query) {
+    const normalizedQuery = String(query || "").toLowerCase();
+    const recencyTerms = ["latest", "current", "today", "recent", "breaking", "live", "right now"];
+    const newsTerms = ["news", "headline", "headlines", "update", "updates"];
+    const realtimeTopics = ["weather", "stock", "stocks", "price", "prices", "score", "scores"];
+
+    const hasRecencyTerm = recencyTerms.some(term => normalizedQuery.includes(term));
+    const hasNewsTerm = newsTerms.some(term => normalizedQuery.includes(term));
+    const hasRealtimeTopic = realtimeTopics.some(term => normalizedQuery.includes(term));
+
+    return (hasRecencyTerm && hasNewsTerm) || hasRealtimeTopic;
 }
 
 async function llmCategoryRoute(query) {
-    const classifierPrompt = `
-You are a query router. Classify the user query into exactly ONE category and give a confidence score.
-
-CATEGORIES:
-Local model can handle:
-- math               (arithmetic, algebra, calculus, statistics)
-- coding             (code generation, debugging, explanation, algorithms)
-- general_knowledge  (facts, definitions, history, science concepts)
-- creative_writing   (stories, poems, jokes, essays, rewrites)
-- reasoning          (logic puzzles, comparisons, pros/cons, step-by-step)
-- language           (grammar, synonyms, translations, style)
-- summarization      (condensing text already provided in the query)
-- translation        (translate provided text)
-
-Needs ChatGPT / internet:
-- realtime_info      (news, weather, stock prices, live scores, today's date)
-- web_search         (requires browsing the internet)
-- image_generation   (create/edit images)
-- file_analysis      (user uploaded a file or references external document)
-- long_context       (full codebase, entire book, very large input)
-- specialized_tool   (plugins, custom GPTs, code interpreter)
-
-Respond ONLY with valid JSON:
-{"category": "<one of the above>", "confidence": <0.0 to 1.0>}
-
-User query: "${query.replace(/"/g, '\\"')}"
-`.trim();
-
+    const classifierPrompt = buildClassifierPrompt(query); 
     try {
         const response = await fetch("http://localhost:11434/api/generate", {
             method: "POST",
@@ -92,32 +194,47 @@ User query: "${query.replace(/"/g, '\\"')}"
 
         const data = await response.json();
         const raw = (data.response || "").trim();
-        const clean = raw.replace(/```json|```/g, "").trim();
+        const clean = stripMarkdownCodeFence(raw);
         const parsed = JSON.parse(clean);
-        const { category, confidence } = parsed;
-        const decision = LOCAL_CATEGORIES.has(category) ? "local" : "chatgpt";
+        const result = normalizeClassifierResult(parsed);
 
-        console.log(`LLM classifier -> ${decision.toUpperCase()} [${category}] confidence=${confidence}`);
-        return { decision, category, confidence, layer: 2 };
+        console.log(
+            `LLM classifier -> ${result.decision.toUpperCase()} [route=${result.route}] confidence=${result.confidence} total=${result.total}`
+        );
+        return result;
     } catch (err) {
         console.error("LLM classifier failed:", err.message);
-        return { decision: "chatgpt", category: "unknown", confidence: 0, layer: 2 };
+        return {
+            decision: "chatgpt",
+            route: "cloud",
+            confidence: "low",
+            override: null,
+            total: null,
+            reason: "Classifier failed, defaulting to cloud.",
+            scores: null,
+            layer: 2,
+        };
     }
 }
 
 async function semanticRoute(query) {
-    const l1 = keywordRoute(query);
-    if (l1.decision !== "unknown") {
-        return { ...l1, confidence: null };
+    const llmRoute = await llmCategoryRoute(query);
+
+    if (
+        llmRoute.override === "real_time_data" ||
+        llmRoute.scores?.recency === 3 ||
+        isRealtimeOrNewsQuery(query)
+    ) {
+        console.log("Real-time/news query detected -> CHATGPT");
+        return { ...llmRoute, decision: "chatgpt", override: llmRoute.override || "real_time_data" };
     }
 
-    const l2 = await llmCategoryRoute(query);
-    if (l2.confidence < CONFIDENCE_THRESHOLD) {
-        console.log(`Low confidence (${l2.confidence}) -> CHATGPT fallback`);
-        return { ...l2, decision: "chatgpt" };
+    if (llmRoute.confidence === "low" && llmRoute.decision === "local") {
+        console.log(`Low confidence (${llmRoute.confidence}) -> CHATGPT fallback`);
+        return { ...llmRoute, decision: "chatgpt" };
     }
 
-    return l2;
+    return llmRoute;
 }
 
 async function* streamOllamaResponse(response) {
@@ -128,7 +245,7 @@ async function* streamOllamaResponse(response) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-
+    let result="";
     while (true) {
         const { done, value } = await reader.read();
         if (done) {
@@ -146,10 +263,12 @@ async function* streamOllamaResponse(response) {
             }
 
             const json = JSON.parse(trimmed);
+            result += json.response || "";
             if (json.response) {
                 yield json.response;
             }
             if (json.done) {
+                addMessage("ollama", result);
                 console.log("Ollama stream ended");
                 return;
             }
@@ -158,6 +277,7 @@ async function* streamOllamaResponse(response) {
             }
         }
     }
+
 
     if (!buffer.trim()) {
         return;
@@ -168,7 +288,22 @@ async function* streamOllamaResponse(response) {
         yield json.response;
     }
 }
+function addMessage(role, content) {
+  let history = JSON.parse(localStorage.getItem("chat_history")) || [];
 
+  history.push({
+    role, // "user" or "assistant"
+    content,
+    time: Date.now()
+  });
+
+  // keep last 20 messages max
+  if (history.length > 20) {
+    history = history.slice(-20);
+  }
+
+  localStorage.setItem("chat_history", JSON.stringify(history));
+}
 function getConversationContainer() {
     const turns = document.querySelectorAll('article[data-testid^="conversation-turn-"], section[data-turn]');
     if (turns.length > 0) {
@@ -241,8 +376,8 @@ function createResponseBubble(routeInfo) {
         border: 1px solid ${isLocal ? "#10a37f55" : "#e5530055"};
     `;
     badge.innerText = isLocal
-        ? `Local | ${routeInfo.category}${routeInfo.confidence ? ` | ${Math.round(routeInfo.confidence * 100)}%` : ""} | Layer ${routeInfo.layer}`
-        : `ChatGPT | ${routeInfo.category}`;
+        ? `Local | ${routeInfo.confidence || "unknown"} confidence | Layer ${routeInfo.layer}`
+        : `ChatGPT | ${routeInfo.override || routeInfo.confidence || "cloud"}`;
 
     const bubble = document.createElement("div");
     bubble.style.cssText = `
@@ -285,19 +420,40 @@ async function injectStreamingResponse(tokenGenerator, routeInfo) {
     ensureCursorStyle();
 
     const textNode = document.createTextNode("");
+    // Thinking placeholder
+    const thinking = document.createElement("span");
+    thinking.innerText = "Thinking";
+    thinking.style.opacity = "0.7";
+
+    // Animated dots
+    const dots = document.createElement("span");
+    dots.innerText = "...";
+    dots.style.cssText = "animation: blink 1s infinite;";
+    //---
     const cursor = document.createElement("span");
     cursor.innerText = "|";
     cursor.style.cssText = "animation: blink 0.7s step-end infinite;";
 
-    bubble.appendChild(textNode);
+    bubble.appendChild(thinking);
+    bubble.appendChild(dots);
     bubble.appendChild(cursor);
-
-    try {
+    let started = false;
+   try {
         for await (const token of tokenGenerator) {
+
+            // 🔥 First token → remove thinking UI
+            if (!started) {
+                started = true;
+                bubble.innerHTML = "";
+                bubble.appendChild(textNode);
+                bubble.appendChild(cursor);
+            }
+
             textNode.textContent += token;
         }
+
     } catch (err) {
-        bubble.innerText = `Error: ${err.message}`;
+        bubble.innerText = `❌ Error: ${err.message}`;
         console.error("Streaming error:", err);
         return;
     }
@@ -329,9 +485,9 @@ async function findModels() {
     return data.models;
 }
 
-function passThroughToChatGPT(editor, query) {
+function passThroughToChatGPT(editor, query, summary = "") {
     console.log("Passing to ChatGPT:", query);
-    editor.innerHTML = `<p>${query}</p>`;
+    editor.innerHTML = `<p>summary:${summary},original_query:${query}</p>`;
     editor.dispatchEvent(new InputEvent("input", { bubbles: true }));
 
     setTimeout(() => {
@@ -343,6 +499,87 @@ function passThroughToChatGPT(editor, query) {
             cancelable: true,
         }));
     }, 50);
+}
+
+///
+function getRecentContext() {
+  let history = JSON.parse(localStorage.getItem("chat_history")) || [];
+
+  let users = [];
+  let assistants = [];
+
+  // traverse from latest → oldest
+  for (let i = history.length - 1; i >= 0; i--) {
+    let msg = history[i];
+
+    if (msg.role === "user" && users.length < 3) {
+      users.push(msg.content);
+    }
+
+    if (msg.role === "ollama" && assistants.length < 3) {
+      assistants.push(msg.content);
+    }
+
+    if (users.length === 3 && assistants.length === 3) break;
+  }
+
+  return {
+    users: users.reverse(),
+    assistants: assistants.reverse()
+  };
+}
+
+
+/// build context prompt
+function buildContextPrompt(users, assistants) {
+  return `
+You are a context extraction engine for an AI system.
+
+Your task:
+Compress the conversation into a sharp, high-signal context summary.
+
+Output requirements:
+- Maximum 3 sentences
+- Focus ONLY on:
+  1. What the user is trying to achieve
+  2. Any relevant technical/domain context
+- Ignore:
+  - greetings, filler, repetition
+  - assistant explanations unless they affect user intent
+- Do NOT explain, just output the summary
+- Be specific, not generic
+
+Conversation:
+
+User Messages:
+${users.map((u, i) => `${i + 1}. ${u}`).join("\n")}
+
+Assistant Messages:
+${assistants.map((a, i) => `${i + 1}. ${a}`).join("\n")}
+
+Final Context Summary:
+`;
+}
+// generate summary and pass to ChatGPT
+async function generateSummary() {
+  const { users, assistants } = getRecentContext();
+  const prompt = buildContextPrompt(users, assistants);
+
+  const res = await fetch("http://localhost:11434/api/generate", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: "ministral-3:8b",
+      prompt: prompt,
+      stream: false
+    })
+  });
+
+  const data = await res.json() || "";
+  console.log("Summary:", data.response);
+  return data.response || "";
 }
 
 document.addEventListener("input", () => {
@@ -392,6 +629,7 @@ document.addEventListener("keydown", async (e) => {
 
     isProcessing = true;
     console.log("Intercepted:", userQuery);
+    let summary = await generateSummary();
 
     try {
         const routeInfo = await semanticRoute(userQuery);
@@ -411,7 +649,7 @@ document.addEventListener("keydown", async (e) => {
             await injectStreamingResponse(streamOllamaResponse(streamResponse), routeInfo);
         } else {
             sendToPopup("CLOUD_QUERY_UPDATE", 1);
-            passThroughToChatGPT(editor, userQuery);
+            passThroughToChatGPT(editor, userQuery,summary);
         }
     } catch (err) {
         console.error("Fatal error:", err);
