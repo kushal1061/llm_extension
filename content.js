@@ -376,7 +376,7 @@ function createResponseBubble(routeInfo) {
         border: 1px solid ${isLocal ? "#10a37f55" : "#e5530055"};
     `;
     badge.innerText = isLocal
-        ? `Local | ${routeInfo.confidence || "unknown"} confidence | Layer ${routeInfo.layer}`
+        ? `Local | ${routeInfo.confidence || "unknown"} confidence | Layer ${routeInfo.layer || "1"} `
         : `ChatGPT | ${routeInfo.override || routeInfo.confidence || "cloud"}`;
 
     const bubble = document.createElement("div");
@@ -603,6 +603,21 @@ function sendToPopup(type, value) {
         });
     }
 }
+let userMode = "hybrid"; // default mode
+let lastresponse = false; // tracks if last response was cloud (true) or local/fresh (false)
+
+// Keep userMode in sync with storage changes (e.g. popup toggle)
+chrome.storage.local.get(["userChoice"], (res) => {
+    userMode = res.userChoice || "hybrid";
+    console.log("Initial userMode:", userMode);
+});
+chrome.storage.onChanged.addListener((changes) => {
+    if (changes.userChoice) {
+        userMode = changes.userChoice.newValue || "hybrid";
+        console.log("userMode updated:", userMode);
+    }
+});
+
 document.addEventListener("keydown", async (e) => {
     if (e.key !== "Enter" || e.shiftKey) {
         return;
@@ -618,7 +633,6 @@ document.addEventListener("keydown", async (e) => {
     }
 
     const userQuery = editor.innerText.trim();
-    editor.innerText = "";
     if (!userQuery) {
         return;
     }
@@ -627,34 +641,83 @@ document.addEventListener("keydown", async (e) => {
     e.stopPropagation();
     e.stopImmediatePropagation();
 
+    editor.innerText = "";
     isProcessing = true;
-    console.log("Intercepted:", userQuery);
-    let summary = await generateSummary();
+    console.log("Intercepted query in mode:", userMode);
 
     try {
-        const routeInfo = await semanticRoute(userQuery);
-        console.log("Final route:", routeInfo);
-
-        if (routeInfo.decision === "local") {
+        if (userMode === "local") {
+            // Pure local — never needs summary, never hits cloud
+            const localRouteInfo = {
+                decision: "local",
+                confidence: "high",
+                override: null,
+                layer: 1,
+            };
             const userToken = Math.ceil(userQuery.length / 4);
             sendToPopup("TOKEN_UPDATE", userToken);
             sendToPopup("LOCAL_QUERY_UPDATE", 1);
             renderLocalUserPrompt(userQuery);
-            const streamResponse = await getLocalStreamingResponse(
-                userQuery,
-                "ministral-3:8b"
-            );
+            const streamResponse = await getLocalStreamingResponse(userQuery, "ministral-3:8b");
+            await injectStreamingResponse(streamOllamaResponse(streamResponse), localRouteInfo);
+            lastresponse = false; // last response was local
 
-            await findModels();
-            await injectStreamingResponse(streamOllamaResponse(streamResponse), routeInfo);
-        } else {
+        } else if (userMode === "cloud") {
+            // Pure cloud — always use summary on first message of a session
             sendToPopup("CLOUD_QUERY_UPDATE", 1);
-            passThroughToChatGPT(editor, userQuery,summary);
+            if (lastresponse === false) {
+                // First cloud message (or after a local response) — inject summary for context
+                const summary = await generateSummary();
+                passThroughToChatGPT(editor, userQuery, summary);
+            } else {
+                // Subsequent cloud messages — ChatGPT already has context in its thread
+                passThroughToChatGPT(editor, userQuery, "");
+            }
+            lastresponse = true;
+
+        } else {
+            // Hybrid — let the semantic router decide
+            try {
+                const routeInfo = await semanticRoute(userQuery);
+                console.log("Final route:", routeInfo);
+
+                if (routeInfo.decision === "local") {
+                    const userToken = Math.ceil(userQuery.length / 4);
+                    sendToPopup("TOKEN_UPDATE", userToken);
+                    sendToPopup("LOCAL_QUERY_UPDATE", 1);
+                    renderLocalUserPrompt(userQuery);
+                    const streamResponse = await getLocalStreamingResponse(userQuery, "ministral-3:8b");
+                    await injectStreamingResponse(streamOllamaResponse(streamResponse), routeInfo);
+                    lastresponse = false; // last response was local
+
+                } else {
+                    // Routed to cloud
+                    sendToPopup("CLOUD_QUERY_UPDATE", 1);
+                    if (lastresponse === false) {
+                        // Switching to cloud (or first cloud message) — send summary for context
+                        const summary = await generateSummary();
+                        passThroughToChatGPT(editor, userQuery, summary);
+                    } else {
+                        // Continuing cloud conversation — no summary needed
+                        passThroughToChatGPT(editor, userQuery, "");
+                    }
+                    lastresponse = true;
+                }
+            } catch (err) {
+                // Hybrid routing failed — fall back to cloud
+                console.error("Routing error, falling back to cloud:", err);
+                sendToPopup("CLOUD_QUERY_UPDATE", 1);
+                if (lastresponse === false) {
+                    const summary = await generateSummary();
+                    passThroughToChatGPT(editor, userQuery, summary);
+                } else {
+                    passThroughToChatGPT(editor, userQuery, "");
+                }
+                lastresponse = true;
+            }
         }
     } catch (err) {
-        console.error("Fatal error:", err);
-        sendToPopup("CLOUD_QUERY_UPDATE", 1);
-        passThroughToChatGPT(editor, userQuery);
+        console.error("Fatal error in keydown handler:", err);
     } finally {
         setTimeout(() => {
             isProcessing = false;

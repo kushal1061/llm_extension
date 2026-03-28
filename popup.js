@@ -1,3 +1,31 @@
+const modeButtons = document.querySelectorAll(".mode-btn");
+
+modeButtons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+        // Remove active from all, set on clicked
+        modeButtons.forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+
+        // Save to storage
+        const choice = btn.innerText.toLowerCase(); // "local" | "cloud" | "hybrid"
+        chrome.storage.local.set({ userChoice: choice }, () => {
+            console.log("User mode saved:", choice);
+        });
+    });
+});
+
+// Restore saved choice when popup opens
+chrome.storage.local.get(["userChoice"], (res) => {
+    if (res.userChoice) {
+        modeButtons.forEach((btn) => {
+            btn.classList.remove("active");
+            if (btn.innerText.toLowerCase() === res.userChoice) {
+                btn.classList.add("active");
+            }
+        });
+    }
+});
+
 async function findModels() {
     const response = await fetch("http://localhost:11434/api/tags");
     if (!response.ok) {
