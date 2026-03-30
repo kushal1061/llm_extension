@@ -16,6 +16,7 @@ function buildClassifierPrompt(userPrompt, conversationHistory = []) {
 Analyze the prompt carefully across all factors below. Be conservative — only route locally if you are confident the local model can handle it well.
 
 ---
+IMP: If you encounter any word like production grade , always route to CLOUD, as local models are not yet reliable for critical use cases.
 
 ## CONVERSATION HISTORY (up to last 3 turns / 6 messages)
 ${historyText}
@@ -354,38 +355,28 @@ function renderLocalUserPrompt(query) {
     section.appendChild(bubble);
     container.appendChild(section);
     section.scrollIntoView({ block: "end", behavior: "smooth" });
+    return section;
 }
 
 function createResponseBubble(routeInfo) {
     const container = getConversationContainer();
-    const isLocal = routeInfo.decision === "local";
     const section = document.createElement("section");
     section.setAttribute("data-turn", "assistant");
     section.style.marginTop = "12px";
 
     const badge = document.createElement("div");
-    badge.style.cssText = `
-        display: inline-block;
-        font-size: 11px;
-        font-family: monospace;
-        padding: 2px 8px;
-        border-radius: 4px;
-        margin-bottom: 6px;
-        background: ${isLocal ? "#10a37f22" : "#e5530022"};
-        color: ${isLocal ? "#10a37f" : "#e55300"};
-        border: 1px solid ${isLocal ? "#10a37f55" : "#e5530055"};
-    `;
-    badge.innerText = isLocal
-        ? `Local | ${routeInfo.confidence || "unknown"} confidence | Layer ${routeInfo.layer || "1"} `
-        : `ChatGPT | ${routeInfo.override || routeInfo.confidence || "cloud"}`;
+    applyRouteBadge(badge, routeInfo);
 
     const bubble = document.createElement("div");
+    const isPending = routeInfo.decision === "pending";
+    const isLocal = routeInfo.decision === "local";
+    const accent = isPending ? "#c6c6c6" : (isLocal ? "#10a37f" : "#e55300");
     bubble.style.cssText = `
         padding: 12px 16px;
         background: #2d2d2d;
         color: #f0f0f0;
         border-radius: 10px;
-        border-left: 3px solid ${isLocal ? "#10a37f" : "#e55300"};
+        border-left: 3px solid ${accent};
         font-family: ui-monospace, monospace;
         font-size: 14px;
         line-height: 1.6;
@@ -401,7 +392,35 @@ function createResponseBubble(routeInfo) {
     container.appendChild(section);
     section.scrollIntoView({ block: "end", behavior: "smooth" });
 
-    return bubble;
+    return { section, badge, bubble };
+}
+
+function applyRouteBadge(badge, routeInfo) {
+    const decision = routeInfo?.decision || "pending";
+    const isPending = decision === "pending";
+    const isLocal = decision === "local";
+    const background = isPending ? "#5f5f5f33" : (isLocal ? "#10a37f22" : "#e5530022");
+    const color = isPending ? "#d0d0d0" : (isLocal ? "#10a37f" : "#e55300");
+    const border = isPending ? "#c6c6c655" : (isLocal ? "#10a37f55" : "#e5530055");
+
+    const label = isPending
+        ? (routeInfo?.label || "Routing...")
+        : (isLocal
+            ? `Local | ${routeInfo.confidence || "unknown"} confidence | Layer ${routeInfo.layer || "1"} `
+            : `ChatGPT | ${routeInfo.override || routeInfo.confidence || "cloud"}`);
+
+    badge.style.cssText = `
+        display: inline-block;
+        font-size: 11px;
+        font-family: monospace;
+        padding: 2px 8px;
+        border-radius: 4px;
+        margin-bottom: 6px;
+        background: ${background};
+        color: ${color};
+        border: 1px solid ${border};
+    `;
+    badge.innerText = label;
 }
 
 function ensureCursorStyle() {
@@ -415,33 +434,17 @@ function ensureCursorStyle() {
     document.head.appendChild(style);
 }
 
-async function injectStreamingResponse(tokenGenerator, routeInfo) {
-    const bubble = createResponseBubble(routeInfo);
-    ensureCursorStyle();
+async function injectStreamingResponse(tokenGenerator, routeInfo, existingResponseUi = null) {
+    const responseUi = existingResponseUi || createResponseBubble(routeInfo);
+    const bubble = responseUi.bubble;
+    applyRouteBadge(responseUi.badge, routeInfo);
 
     const textNode = document.createTextNode("");
-    // Thinking placeholder
-    const thinking = document.createElement("span");
-    thinking.innerText = "Thinking";
-    thinking.style.opacity = "0.7";
-
-    // Animated dots
-    const dots = document.createElement("span");
-    dots.innerText = "...";
-    dots.style.cssText = "animation: blink 1s infinite;";
-    //---
-    const cursor = document.createElement("span");
-    cursor.innerText = "|";
-    cursor.style.cssText = "animation: blink 0.7s step-end infinite;";
-
-    bubble.appendChild(thinking);
-    bubble.appendChild(dots);
-    bubble.appendChild(cursor);
+    const cursor = setThinkingState(bubble, "Thinking");
     let started = false;
-   try {
-        for await (const token of tokenGenerator) {
 
-            // 🔥 First token → remove thinking UI
+    try {
+        for await (const token of tokenGenerator) {
             if (!started) {
                 started = true;
                 bubble.innerHTML = "";
@@ -451,15 +454,42 @@ async function injectStreamingResponse(tokenGenerator, routeInfo) {
 
             textNode.textContent += token;
         }
-
     } catch (err) {
-        bubble.innerText = `❌ Error: ${err.message}`;
+        bubble.innerText = `Error: ${err.message}`;
         console.error("Streaming error:", err);
         return;
     }
 
     cursor.remove();
     console.log("Streaming complete");
+}
+
+function setThinkingState(bubble, message = "Thinking") {
+    ensureCursorStyle();
+    bubble.innerHTML = "";
+
+    const thinking = document.createElement("span");
+    thinking.innerText = message;
+    thinking.style.opacity = "0.7";
+
+    const dots = document.createElement("span");
+    dots.innerText = "...";
+    dots.style.cssText = "animation: blink 1s infinite;";
+
+    const cursor = document.createElement("span");
+    cursor.innerText = "|";
+    cursor.style.cssText = "animation: blink 0.7s step-end infinite;";
+
+    bubble.appendChild(thinking);
+    bubble.appendChild(dots);
+    bubble.appendChild(cursor);
+    return cursor;
+}
+
+function createPendingResponseBubble(label = "Routing local model...") {
+    const responseUi = createResponseBubble({ decision: "pending", label });
+    setThinkingState(responseUi.bubble, "Thinking");
+    return responseUi;
 }
 
 async function getLocalStreamingResponse(query, model = "ministral-3:8b") {
@@ -658,8 +688,9 @@ document.addEventListener("keydown", async (e) => {
             sendToPopup("TOKEN_UPDATE", userToken);
             sendToPopup("LOCAL_QUERY_UPDATE", 1);
             renderLocalUserPrompt(userQuery);
+            const pendingUi = createPendingResponseBubble("Local model selected");
             const streamResponse = await getLocalStreamingResponse(userQuery, "ministral-3:8b");
-            await injectStreamingResponse(streamOllamaResponse(streamResponse), localRouteInfo);
+            await injectStreamingResponse(streamOllamaResponse(streamResponse), localRouteInfo, pendingUi);
             lastresponse = false; // last response was local
 
         } else if (userMode === "cloud") {
@@ -677,6 +708,8 @@ document.addEventListener("keydown", async (e) => {
 
         } else {
             // Hybrid — let the semantic router decide
+            const userPromptSection = renderLocalUserPrompt(userQuery);
+            const pendingUi = createPendingResponseBubble("Routing...");
             try {
                 const routeInfo = await semanticRoute(userQuery);
                 console.log("Final route:", routeInfo);
@@ -685,13 +718,14 @@ document.addEventListener("keydown", async (e) => {
                     const userToken = Math.ceil(userQuery.length / 4);
                     sendToPopup("TOKEN_UPDATE", userToken);
                     sendToPopup("LOCAL_QUERY_UPDATE", 1);
-                    renderLocalUserPrompt(userQuery);
                     const streamResponse = await getLocalStreamingResponse(userQuery, "ministral-3:8b");
-                    await injectStreamingResponse(streamOllamaResponse(streamResponse), routeInfo);
+                    await injectStreamingResponse(streamOllamaResponse(streamResponse), routeInfo, pendingUi);
                     lastresponse = false; // last response was local
 
                 } else {
                     // Routed to cloud
+                    userPromptSection.remove();
+                    pendingUi.section.remove();
                     sendToPopup("CLOUD_QUERY_UPDATE", 1);
                     if (lastresponse === false) {
                         // Switching to cloud (or first cloud message) — send summary for context
@@ -706,6 +740,8 @@ document.addEventListener("keydown", async (e) => {
             } catch (err) {
                 // Hybrid routing failed — fall back to cloud
                 console.error("Routing error, falling back to cloud:", err);
+                userPromptSection.remove();
+                pendingUi.section.remove();
                 sendToPopup("CLOUD_QUERY_UPDATE", 1);
                 if (lastresponse === false) {
                     const summary = await generateSummary();
